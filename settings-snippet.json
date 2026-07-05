@@ -1,0 +1,35 @@
+{
+  "_comment": "Reference only — install.sh merges these into ~/.claude/settings.json for you (backing it up first). Do NOT overwrite your whole settings.json with this file; copy the blocks you need.",
+
+  "statusLine": {
+    "type": "command",
+    "command": "sh ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/omc-hud-plus.sh"
+  },
+
+  "_statusLine_standalone_variant": {
+    "type": "command",
+    "command": "bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-command.sh"
+  },
+
+  "omcHud": {
+    "preset": "focused",
+    "elementOrder": ["omcLabel", "model", "contextBar"],
+    "elements": {
+      "thinking": false,
+      "useBars": false
+    }
+  },
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/statusline-guard.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
