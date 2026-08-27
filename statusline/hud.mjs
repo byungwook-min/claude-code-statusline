@@ -7,6 +7,7 @@
  *
  *   branch:<branch> (wt:<worktree>) | ?N            <- git context
  *   Model: X | ctx:N% | 5h:N%(reset) wk:N%(reset) | session:Nm
+ *   in:… out:… | cache r:… w:… | Δ$… | $…           <- token/cost metrics
  *
  * Everything except the rate limits comes from the statusLine stdin JSON.
  * Rate limits come from lib/usage.mjs, which serves a cache and refreshes in
@@ -221,11 +222,52 @@ function lineStatus(payload) {
   return parts.length ? parts.join(`${DIM} | ${RST}`) : null;
 }
 
+/* ---------- line 3: token / cache / cost metrics ---------- */
+function lineMetrics(payload) {
+  const cw = payload?.context_window ?? {};
+  const cu = cw.current_usage ?? {};
+  const tokIn = cw.total_input_tokens ?? 0;
+  const tokOut = cw.total_output_tokens ?? 0;
+  const cRead = cu.cache_read_input_tokens ?? 0;
+  const cWrite = cu.cache_creation_input_tokens ?? 0;
+  const costTotal = Number(payload?.cost?.total_cost_usd ?? 0);
+
+  // Rendered unconditionally, including the all-zero first render: a statusline
+  // that changes height between turns makes the terminal jump.
+
+  let line =
+    `${DIM}in:${fmtTokens(tokIn)} out:${fmtTokens(tokOut)}${RST} ` +
+    `${DIM}| cache r:${fmtTokens(cRead)} w:${fmtTokens(cWrite)}${RST}`;
+
+  // Per-turn delta: cost_total is cumulative, so diff successive renders.
+  // Skipped on the very first render, where the "delta" would be the whole total.
+  // Both cost segments are always rendered (Δ$0.00 / $0.00 on the first turn)
+  // so the metrics line never changes width between renders.
+  const sid = payload?.session_id;
+  let delta = 0;
+  if (sid) {
+    try {
+      const f = join(tmpdir(), `claude-statusline-cost.${sid}`);
+      const hadPrior = existsSync(f);
+      let prev = 0;
+      if (hadPrior) prev = Number(readFileSync(f, "utf-8").trim()) || 0;
+      writeFileSync(f, String(costTotal));
+      if (hadPrior) delta = Math.max(0, costTotal - prev);
+    } catch {
+      /* optional */
+    }
+  }
+  const deltaStr = delta > 0 && delta < 0.01 ? delta.toFixed(4) : delta.toFixed(2);
+  line += ` ${DIM}|${RST} ${MAGENTA}Δ$${deltaStr}${RST}`;
+  line += ` ${DIM}|${RST} ${GREEN}$${costTotal.toFixed(2)}${RST}`;
+  return line;
+}
+
 function main() {
   const payload = readStdin();
   const cwd = payload?.workspace?.current_dir || payload?.cwd || process.cwd();
   const wtHint = payload?.workspace?.git_worktree || null;
-  for (const l of [lineGit(cwd, wtHint), lineStatus(payload)]) {
+  for (const l of [lineGit(cwd, wtHint), lineStatus(payload), lineMetrics(payload)]) {
     if (l) console.log(l);
   }
 }
