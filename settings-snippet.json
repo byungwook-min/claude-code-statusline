@@ -1,0 +1,21 @@
+{
+  "_comment": "Reference only — install.sh merges these into ~/.claude/settings.json for you (backing it up first). Do NOT overwrite your whole settings.json with this file; copy the blocks you need.",
+
+  "statusLine": {
+    "type": "command",
+    "command": "node ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline/hud.mjs"
+  },
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/statusline-guard.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
