@@ -15,8 +15,8 @@ user-invocable: true
 # claude-code-statusline
 
 Re-applies the HUD from the **claude-code-statusline** repo. The repo is the single source
-of truth: `install.sh` copies `statusline/hud.mjs` + `lib/usage.mjs` into `~/.claude/`,
-points `settings.json` `statusLine.command` at it, and installs the SessionStart auto-heal
+of truth: `install.sh` copies `statusline/hud.mjs` into `~/.claude/`, points `settings.json`
+`statusLine` at it (with `refreshInterval: 60`), and installs the SessionStart auto-heal
 hook plus this skill. Every `settings.json` write is backed up first.
 
 ## Steps
@@ -40,7 +40,7 @@ Pass `--no-hook`, `--no-skill`, or `--print` (dry run) through when asked.
 ### 2. Verify it renders
 
 Pipe a minimal payload and confirm three lines come back, including the zero-valued
-metrics line (`in:0 out:0 | cache r:0 w:0 | Δ$0.00 | $0.00`):
+metrics line (`in:0 out:0 | cache r:0 w:0 · --(--) | Δ$0.00 | $0.00`):
 
 ```bash
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -51,7 +51,7 @@ printf '{"session_id":"verify","model":{"display_name":"Test"},"workspace":{"cur
 ### 3. Report
 
 Tell the user a **new session** is needed to see it, and that the SessionStart hook will
-re-assert `statusLine.command` automatically if another tool rewrites `settings.json`.
+re-assert the `statusLine` block automatically if another tool rewrites `settings.json`.
 
 ## Notes
 

@@ -10,14 +10,20 @@ import json, os, re, subprocess, tempfile, time, pathlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SID = "preview-sample"
 tmp = tempfile.gettempdir()
+# A throwaway clean repo for line 1, so the preview never shows this checkout's branch or dirt.
+sample = pathlib.Path(tempfile.mkdtemp(), "claude-code-statusline")
+sample.mkdir()
+subprocess.run(["git", "init", "-q", "-b", "main", str(sample)], check=True)
+subprocess.run(["git", "-C", str(sample), "-c", "user.name=p", "-c", "user.email=p@x", "commit", "-q", "--allow-empty", "-m", "init"], check=True)
 # Pre-seed the per-session files so the sample shows a 42m uptime and a Δ$.
 pathlib.Path(tmp, f"claude-statusline-start.{SID}").write_text(str(int((time.time() - 42 * 60) * 1000)))
-pathlib.Path(tmp, f"claude-statusline-cost.{SID}").write_text("1.16")
+pathlib.Path(tmp, f"claude-statusline-cost.{SID}").write_text('{"cost":1.16,"delta":0.04}')
+now = int(time.time())
 
 payload = {
     "session_id": SID,
     "model": {"display_name": "Fable 5"},
-    "workspace": {"current_dir": str(ROOT)},
+    "workspace": {"current_dir": str(sample)},
     "context_window": {
         "used_percentage": 12,
         "total_input_tokens": 61000,
@@ -25,6 +31,11 @@ payload = {
         "current_usage": {"cache_read_input_tokens": 58000, "cache_creation_input_tokens": 2100},
     },
     "cost": {"total_cost_usd": 1.20},
+    "rate_limits": {
+        "five_hour": {"used_percentage": 23, "resets_at": now + 4 * 3600 + 33 * 60},
+        "seven_day": {"used_percentage": 41, "resets_at": now + 2 * 86400 + 3 * 3600},
+    },
+    "prompt_cache": {"warm": True, "ttl": "1h", "expires_at": now + 52 * 60 + 30},
 }
 out = subprocess.run(["node", str(ROOT / "statusline/hud.mjs")], input=json.dumps(payload),
                      capture_output=True, text=True, check=True).stdout.rstrip("\n")

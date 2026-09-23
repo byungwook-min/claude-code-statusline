@@ -7,23 +7,20 @@
  *
  *   branch:<branch> (wt:<worktree>) | ?N            <- git context
  *   Model: X | ctx:N% | 5h:N%(reset) wk:N%(reset) | session:Nm
- *   in:… out:… | cache r:… w:… | Δ$… | $…           <- token/cost metrics
+ *   in:… out:… | cache r:… w:… · 1h(52m) | Δ$… | $…  <- token/cache/cost metrics
  *
- * Everything except the rate limits comes from the statusLine stdin JSON.
- * Rate limits come from lib/usage.mjs, which serves a cache and refreshes in
- * the background so a render never waits on the network.
+ * Everything comes from the statusLine stdin JSON; nothing is fetched.
  *
  * Design constraints:
  *  - Never throw. A statusline that crashes leaves the user with a blank bar,
  *    so every optional section is individually guarded and simply omitted.
- *  - Never block. git calls carry a timeout; usage is cache-only on this path.
+ *  - Never block. git calls carry a timeout; nothing else leaves the process.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { getUsageCached } from "./lib/usage.mjs";
 
 const DIM = "\x1b[2m";
 const RST = "\x1b[0m";
@@ -68,10 +65,10 @@ function fmtTokens(n) {
   return String(n);
 }
 
-/** "4h33m" / "12m" — how long until a rate-limit window resets. */
-function fmtUntil(iso) {
-  if (!iso) return null;
-  const ms = new Date(iso).getTime() - Date.now();
+/** "4h33m" / "12m" — time left until an epoch-seconds instant; null once passed. */
+function fmtUntil(epochSec) {
+  if (epochSec == null) return null;
+  const ms = Number(epochSec) * 1000 - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return null;
   const mins = Math.floor(ms / 60000);
   const d = Math.floor(mins / 1440);
@@ -195,26 +192,17 @@ function lineStatus(payload) {
   const p = Math.round(Number(payload?.context_window?.used_percentage ?? 0));
   parts.push(`ctx:${pctColor(p)}${p}%${RST}`);
 
-  // Rate limits: cache-only read, refreshed out of band.
-  let usage = null;
-  try {
-    usage = getUsageCached();
-  } catch {
-    /* optional */
-  }
-  // Rate-limit segments are always rendered; "--" stands in until the cache
-  // has a value, so the line keeps its shape from the very first render.
-  const rate = (label, pct, resetsAt) => {
-    if (pct == null) return `${DIM}${label}:--%${RST}`;
-    const u = fmtUntil(resetsAt);
+  // rate_limits is only in the payload for Pro/Max, and only after the first
+  // API response. The segments are always rendered; "--" stands in until then,
+  // so the line keeps its shape from the very first render.
+  const rl = payload?.rate_limits ?? {};
+  const rate = (label, win) => {
+    if (win?.used_percentage == null) return `${DIM}${label}:--%${RST}`;
+    const pct = Math.round(Number(win.used_percentage));
+    const u = fmtUntil(win.resets_at);
     return `${DIM}${label}:${RST}${pctColor(pct)}${pct}%${RST}` + (u ? `${DIM}(${u})${RST}` : "");
   };
-  parts.push(
-    [
-      rate("5h", usage?.fiveHourPercent, usage?.fiveHourResetsAt),
-      rate("wk", usage?.weeklyPercent, usage?.weeklyResetsAt),
-    ].join(" "),
-  );
+  parts.push([rate("5h", rl.five_hour), rate("wk", rl.seven_day)].join(" "));
 
   const mins = sessionMinutes(payload?.session_id) ?? 0;
   parts.push(`session:${GREEN}${mins}m${RST}`);
@@ -223,6 +211,33 @@ function lineStatus(payload) {
 }
 
 /* ---------- line 3: token / cache / cost metrics ---------- */
+const CACHE_WARN_MS = 10 * 60 * 1000;
+const MISS_SHOW_MS = 2 * 60 * 1000;
+
+/**
+ * "· 1h(52m)" while warm, "· 1h(COLD +135k)" once the prefix has expired
+ * (the +N is what the next request re-caches), "· --(--)" before the first
+ * API response. A miss in the last two minutes appends its diagnosed cause.
+ */
+function cacheState(pc) {
+  if (!pc?.ttl) return `${DIM}· --(--)${RST}`;
+  // warm is as of the last response; the clock may have run past expires_at since.
+  const msLeft = pc.warm && pc.expires_at ? pc.expires_at * 1000 - Date.now() : 0;
+  let body;
+  if (msLeft > 0) {
+    body = `${msLeft < CACHE_WARN_MS ? YELLOW : GREEN}${fmtUntil(pc.expires_at)}${RST}`;
+  } else {
+    const re = pc.recache_tokens_if_cold;
+    body = `${RED}COLD${re ? ` +${fmtTokens(re)}` : ""}${RST}`;
+  }
+  let out = `${DIM}· ${pc.ttl}(${RST}${body}${DIM})${RST}`;
+  const causes = pc.last_miss_cause?.causes;
+  if (causes?.length && pc.last_miss_at && Date.now() - pc.last_miss_at * 1000 < MISS_SHOW_MS) {
+    out += ` ${YELLOW}miss:${causes.join(",")}${RST}`;
+  }
+  return out;
+}
+
 function lineMetrics(payload) {
   const cw = payload?.context_window ?? {};
   const cu = cw.current_usage ?? {};
@@ -237,22 +252,31 @@ function lineMetrics(payload) {
 
   let line =
     `${DIM}in:${fmtTokens(tokIn)} out:${fmtTokens(tokOut)}${RST} ` +
-    `${DIM}| cache r:${fmtTokens(cRead)} w:${fmtTokens(cWrite)}${RST}`;
+    `${DIM}| cache r:${fmtTokens(cRead)} w:${fmtTokens(cWrite)}${RST} ` +
+    cacheState(payload?.prompt_cache);
 
-  // Per-turn delta: cost_total is cumulative, so diff successive renders.
-  // Skipped on the very first render, where the "delta" would be the whole total.
-  // Both cost segments are always rendered (Δ$0.00 / $0.00 on the first turn)
-  // so the metrics line never changes width between renders.
+  // Per-turn delta: cost_total is cumulative, so diff it against the previous
+  // render. Renders also fire on the refreshInterval timer with an unchanged
+  // total, so the last delta is kept until the total moves again — otherwise
+  // Δ$ would flicker to 0.00 between turns. Skipped on the very first render,
+  // where the "delta" would be the whole total. Both cost segments are always
+  // rendered (Δ$0.00 / $0.00 on the first turn) so the line never changes width.
   const sid = payload?.session_id;
   let delta = 0;
   if (sid) {
     try {
       const f = join(tmpdir(), `claude-statusline-cost.${sid}`);
-      const hadPrior = existsSync(f);
-      let prev = 0;
-      if (hadPrior) prev = Number(readFileSync(f, "utf-8").trim()) || 0;
-      writeFileSync(f, String(costTotal));
-      if (hadPrior) delta = Math.max(0, costTotal - prev);
+      let prev = null;
+      if (existsSync(f)) {
+        try {
+          prev = JSON.parse(readFileSync(f, "utf-8"));
+        } catch {
+          prev = null; // unreadable — fall through and rewrite it
+        }
+      }
+      if (typeof prev === "number") prev = { cost: prev, delta: 0 }; // pre-JSON file format
+      if (prev) delta = costTotal === prev.cost ? prev.delta ?? 0 : Math.max(0, costTotal - prev.cost);
+      writeFileSync(f, JSON.stringify({ cost: costTotal, delta }));
     } catch {
       /* optional */
     }

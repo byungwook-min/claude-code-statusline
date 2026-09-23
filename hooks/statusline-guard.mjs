@@ -3,9 +3,10 @@
  * claude-code-statusline — SessionStart auto-heal hook.
  *
  * Problem: other tools (Orca, IDE integrations, setup scripts) rewrite
- * settings.json and can reset `statusLine.command`. This hook runs on
- * SessionStart and, if it detects that drift, quietly re-points
- * statusLine.command at the installed HUD.
+ * settings.json and can reset `statusLine.command` or drop `refreshInterval`
+ * (which the cache-expiry countdown needs to keep ticking while idle). This
+ * hook runs on SessionStart and, if it detects that drift, quietly restores
+ * the statusLine block.
  *
  * It only writes when it finds drift, so a healthy config incurs no churn. It
  * never throws out of the process — a statusline hook must never break a session.
@@ -22,9 +23,10 @@ import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-// The literal token string must match exactly what install.sh writes, so drift
-// comparison is a plain string equality check.
+// The literal token string and the interval must match exactly what install.sh
+// writes, so drift comparison is a plain equality check.
 const CONFIG_TOKEN = "${CLAUDE_CONFIG_DIR:-$HOME/.claude}";
+const REFRESH_INTERVAL = 60;
 
 function main() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
@@ -49,11 +51,11 @@ function main() {
     return; // JSONC / malformed — refuse to touch it
   }
 
-  const current = settings?.statusLine?.command ?? null;
-  if (current === desired) return; // already correct — no write
+  const sl = settings?.statusLine;
+  if (sl?.command === desired && sl?.refreshInterval === REFRESH_INTERVAL) return; // no write
 
   // Heal: back up once per drift, then rewrite preserving all other keys.
-  settings.statusLine = { type: "command", command: desired };
+  settings.statusLine = { type: "command", command: desired, refreshInterval: REFRESH_INTERVAL };
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     copyFileSync(settingsPath, `${settingsPath}.bak.${stamp}`);

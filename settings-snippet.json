@@ -3,7 +3,8 @@
 
   "statusLine": {
     "type": "command",
-    "command": "node ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline/hud.mjs"
+    "command": "node ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline/hud.mjs",
+    "refreshInterval": 60
   },
 
   "hooks": {

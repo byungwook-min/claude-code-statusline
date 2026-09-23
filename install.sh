@@ -115,24 +115,29 @@ jq_write() {
 }
 
 SETTINGS="$CONFIG_DIR/settings.json"
-# Must stay byte-identical with the string hooks/statusline-guard.mjs compares against.
+# Must stay identical with what hooks/statusline-guard.mjs compares against.
 CONFIG_DIR_TOKEN='${CLAUDE_CONFIG_DIR:-$HOME/.claude}'
 DESIRED_CMD="node ${CONFIG_DIR_TOKEN}/statusline/hud.mjs"
+# Seconds between timer renders, so the cache-expiry countdown ticks while idle.
+REFRESH_INTERVAL=60
 
 # 1. HUD script
 step "Installing HUD -> $CONFIG_DIR/statusline/hud.mjs"
-run "mkdir -p '$CONFIG_DIR/statusline/lib'"
+run "mkdir -p '$CONFIG_DIR/statusline'"
 if [ "$DRY_RUN" != 1 ]; then
   get_file "statusline/hud.mjs" "$CONFIG_DIR/statusline/hud.mjs"
-  get_file "statusline/lib/usage.mjs" "$CONFIG_DIR/statusline/lib/usage.mjs"
   run "chmod +x '$CONFIG_DIR/statusline/hud.mjs'"
 fi
+# Rate limits now come from the statusline payload; drop the old fetcher and its cache.
+run "rm -f '$CONFIG_DIR/statusline/lib/usage.mjs' '$CONFIG_DIR/statusline/usage-cache.json'"
+run "rmdir '$CONFIG_DIR/statusline/lib' 2>/dev/null || true"
 ok "HUD in place"
 
 # 2. settings.json statusLine
 step "Pointing settings.json statusLine at the HUD"
-jq_write "$SETTINGS" '.statusLine = {type:"command", command:$cmd}' --arg cmd "$DESIRED_CMD"
-ok "statusLine.command set"
+jq_write "$SETTINGS" '.statusLine = {type:"command", command:$cmd, refreshInterval:($iv|tonumber)}' \
+  --arg cmd "$DESIRED_CMD" --arg iv "$REFRESH_INTERVAL"
+ok "statusLine.command set (refreshInterval ${REFRESH_INTERVAL}s)"
 
 # 3. SessionStart auto-heal hook
 if [ "$INSTALL_HOOK" = 1 ]; then
